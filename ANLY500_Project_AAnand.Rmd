@@ -1,0 +1,773 @@
+---
+title: "ANLY500_Project_AAnand"
+author: "Abhishek Anand"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Packages
+
+```{r load packages, echo=FALSE, warning=FALSE, include=FALSE}
+library(Hmisc)
+library(Rmisc)
+library(psych)
+library(moments)
+library(VIM, quietly = T)
+library(mice)
+library(corrplot)
+library(rio)
+library(ggplot2)
+library(cocor)
+library(ppcor)
+library(MOTE)
+library(pwr)
+library(papaja)
+library(data.table)
+library(MASS)
+library(reshape2)
+library(reshape)
+library(tidyverse)
+library(ez)
+library(knitr)
+```
+
+```{r, echo=FALSE, warning=FALSE, include=FALSE}
+cleanup <- theme(panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(), 
+                panel.background = element_blank(), 
+                axis.line.x = element_line(color = "black"),
+                axis.line.y = element_line(color = "black"),
+                legend.key = element_rect(fill = "white"),
+                text = element_text(size = 10))
+```
+
+## Problem Statement
+
+ADD DETAILS for each below:\  
+  Exploring the variability in retail sales around holiday periods compared to regular periods\
+    Predicting increased sales phenomena for staffing and inventory planning\
+    Provide recommendations for preparations to compete well against other giants\
+  Background on Walmart\
+    Size, volume of sales\
+    Background on Holiday Sales\
+  Overall volume\
+    Share by competitors\
+
+  Shortcomings of Current analyses:\
+    Describe what summaries on Walmart sales we find\
+    What is missing is the ratios / confidence of what rates of growth occur per holiday period over years?
+    Describe the business value my analyses will provide
+
+```{r, echo=FALSE, warning=FALSE, include=FALSE}
+walmart_data <- read.csv("C:/Users/aanan/Documents/HUST Academics/Fall 2022/500/Project/Walmart.csv")
+```
+
+## Data Description
+
+DESCRIBE DATA SOURCE
+
+LIST AND DESCRIBE VARIABLES
+
+DESCRIBE HOW THE DATA PRESENTS [Range, Levels, etc.]
+
+## Data Screening
+
+### Accuracy
+
+```{r accuracy}
+noerr <- walmart_data
+noerr$Holiday_Flag <- as.factor(noerr$Holiday_Flag)
+noerr$Date <- as.Date(noerr$Date, tz="UTC", format = "%d-%m-%Y")
+summary(noerr)
+```
+
+We see that the data looks relatively accurate:\
+- The number of store ranges from 1 to 45, the number of stores the dataset is meant to have data for\
+- Date ranges from Feb 05, 2010 to Oct 26, 2012\
+- The Weekly Sales ranges from \$209,986 to \$3,818,686, which seems normal for a chain of Walmart's size\
+- There are two levels for the Holiday Flag, i.e., days with holidays and days without\
+- The temperature ranges from -2F to 100F, which indicates the temperatures are within observed values for the region\
+- Fuel price ranges from \$2.47 to \$4.47, also within reason\
+- CPI ranges from 126 to 227, which seems a little weird. The US CPI for 2010 was approx. 218 (229 for 2012). Because the data seems inaccurate, I will remove this variable fully to keep analysis grounded in reality.\
+- Unemployment rate ranges from 3.9\% to 14.3\%, which matches our knowledge of the 2010-2012 period of the rise out of 2008 recession and into economic growth\
+
+```{r}
+noerr <- noerr[,c(1:6,8)]
+```
+
+```{r}
+percentmiss <- function(x){sum(is.na(x))/length(x)*100}
+missing <- apply(noerr, 1, percentmiss)
+table(missing)
+```
+
+Because there is no missing values, our data is complete and we do not have to apply estimation to extrapolate and fill missing values if MCAR.
+
+```{r}
+noerr$year <- as.numeric(format(as.Date(noerr$Date, format="%Y-%m-%d"),"%Y"))
+noerr$month <- as.numeric(format(as.Date(noerr$Date, format="%Y-%m-%d"),"%m"))
+#noerr$day <- as.numeric(format(as.Date(noerr$Date, format="%Y-%m-%d"),"%d"))
+noerr$Holiday_Flag <- as.numeric(noerr$Holiday_Flag)
+```
+
+I believe that year and month may be important factor for sales volume. However, because the data is collected each Saturday, the specific day itself would make little sense as a predictor.
+
+### Outliers:
+
+```{r outliers}
+mahal <- mahalanobis(noerr[ , -c(1:2,4,8:9)],
+                    colMeans(noerr[ , -c(1:2,4,8:9)], na.rm=TRUE),
+                    cov(noerr[ , -c(1:2,4,8:9)], use ="pairwise.complete.obs"))
+cutmahal <- qchisq(1-.001, ncol(noerr[,-c(1:2,4,8:9)]))
+
+badmahal <- as.numeric(mahal >cutmahal)
+table(badmahal)
+```
+
+We see that there are 10 outliers using a general mahalnobis approach.
+
+Let us also try the outlier based on leverage and cooks.
+
+```{r}
+noerr$year <- as.factor(noerr$year)
+noerr$month <- as.factor(noerr$month)
+noerr$Holiday_Flag <- as.factor(noerr$Holiday_Flag)
+noerr$Store <- as.factor(noerr$Store)
+```
+
+```{r}
+model_outlier <- lm(Weekly_Sales ~ Temperature + Fuel_Price + Unemployment,
+                    noerr)
+```
+
+#### Leverage
+
+```{r leverage}
+k <- 3
+leverage <- hatvalues(model_outlier)
+cutleverage <- (2*k+2)/nrow(noerr)
+badleverage <- as.numeric(leverage > cutleverage)
+table(badleverage)
+```
+
+According to leverage, there are 414 outliers.
+
+```{r cooks}
+cooks <- cooks.distance(model_outlier)
+cutcooks <- 4 / (nrow(noerr) - k - 1)
+badcooks <- as.numeric(cooks > cutcooks)
+table(badcooks)
+```
+
+According to Cooks', there are no 153.
+
+```{r}
+totalout <- badmahal + badleverage + badcooks
+table(totalout)
+```
+
+We see that there are 33 outliers across the 3 outlier tests (if we have a cutoff that an outlier is only if two tests result them in outlier). However, upon examination of the outliers, it may make sense, for the purpose of our analysis, to leave these outliers in to understand whether there is actual difference in sales volume between holiday and no-holiday flags. If we removed outliers, we would remove high sales volume data from no-holiday period and low sales volume data from holiday period.
+
+Hence, we will only remove outliers that meet all three outlier tests, which for our dataset, is none.
+
+```{r}
+noout_v1 <- subset(noerr, totalout<2) # intermediate outlier removal
+noout_v2 <- subset(noerr, totalout<3) # minimal outlier removal
+justout <- subset(noerr, totalout>=2)
+```
+
+### Additivity:
+
+```{r}
+noout_v2$year <- as.numeric(noout_v2$year)
+noout_v2$month <- as.numeric(noout_v2$month)
+noout_v2$Holiday_Flag <- as.numeric(noout_v2$Holiday_Flag)
+noout_v2$Store <- as.numeric(noout_v2$Store)
+```
+
+```{r}
+cor(noout_v2[,-c(2,4)])
+```
+
+```{r}
+corrplot(cor(noout_v2[,-c(2,4)]))
+```
+
+The assumption of Additivity is met because of lack of colinearity.
+
+### Linearity: 
+
+```{r}
+random <- rchisq(nrow(noout_v2), 7)
+fake <- lm(random ~ .,
+           data = noout_v2)
+standardized <- rstudent(fake)
+fitvalues <- scale(fake$fitted.values)
+```
+
+```{r}
+{qqnorm(standardized)
+abline(0,1)}
+```
+
+```{r}
+plot(fake, 2)
+```
+
+The linearity assumption is met. The data lays primarily on the line between -2 to 2.
+
+### Normality
+
+```{r normality}
+hist(standardized, breaks = 15)
+```
+
+```{r}
+round(mean(standardized),5)
+```
+
+We see that the histogram of standardized values is centered around the mean of 0, with much of the spread contained between -2 and 2. Only a few values cause a tail towards the positive x-axis, but the distribution is still quite normal-looking. Hence, we can say that the assumption for normality is met.
+
+### Homogeneity/Heteroscedasticity
+
+```{r homogs}
+{plot(fitvalues, standardized) 
+abline(0,0)
+abline(v = 0)}
+```
+
+The spread of data looks even between -2 and 2 across the x- and y-axes. Hence, the assumption of homogeneity and homoscedascity appears to be met.
+
+
+```{r}
+walmart_clean <- noout_v2
+```
+
+## Exploratory Data Analyses
+
+```{r as factor}
+walmart_clean$Holiday_Flag <- factor(walmart_clean$Holiday_Flag,
+                                     levels = c(1,2),
+                                     labels = c("No_Holiday", "Holiday"))
+walmart_clean$Store <- as.factor(walmart_clean$Store)
+walmart_clean$year <- factor(walmart_clean$year,
+                             levels = c(1,2,3),
+                             labels = c(2010,
+                                        2011,
+                                        2012)) #break out date into year
+walmart_clean$month <- factor(walmart_clean$month,
+                             levels = c(1,2,3,4,5,6,7,8,9,10,11,12),
+                             labels = c("Jan",
+                                        "Feb",
+                                        "Mar",
+                                        "Apr",
+                                        "May",
+                                        "Jun",
+                                        "Jul",
+                                        "Aug",
+                                        "Sep",
+                                        "Oct",
+                                        "Nov",
+                                        "Dec")) #break out date into month
+```
+
+### Data Distribution Plots
+
+#### Temperature
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Temperature))+
+  geom_histogram(bins=30)+
+  labs(title = 'Temperature Distribution',
+       y='Frequency',
+       x='Temperature')+
+  cleanup +
+  coord_cartesian(xlim = c(-10,110), ylim = c(0,600))
+```
+
+#### Fuel Price
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Fuel_Price))+
+  geom_histogram(bins=30)+
+  labs(title = 'Fuel Price Distribution',
+       y='Frequency',
+       x='Fuel Price')+
+  cleanup +
+  coord_cartesian(xlim = c(2.5,4.5), ylim = c(0,500))
+```
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Weekly_Sales))+
+  geom_histogram(bins=300)+
+  labs(title = 'Weekly Sales Volume Distribution',
+       y='Frequency',
+       x='Weekly Sales Volume')+
+  cleanup +
+  coord_cartesian(xlim = c(200000,600000), ylim = c(0,100))
+```
+
+### Relationship Plots
+
+#### Sales By Store
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Weekly_Sales, reorder(Store,
+                                   FUN = median, Weekly_Sales,
+                                   decreasing = TRUE)))+
+  geom_boxplot()+
+  labs(title = 'Difference in Weekly Sales Among Stores',
+       x='Weekly Sales Volume',
+       y='Store')+
+  cleanup +
+  coord_cartesian(xlim = c(100000,4000000))
+```
+
+#### Sales By Temperature
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Temperature, Weekly_Sales))+
+  geom_point(alpha = 0.1) +
+  #geom_histogram(bins=75)+
+  labs(title = 'Highest Sales is During Cooler Weather',
+       y='Weekly Sales Volume',
+       x='Temperature')+
+  cleanup +
+  coord_cartesian(xlim = c(1,100), ylim = c(0,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+
+#### Sales By Fuel Price
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Fuel_Price, Weekly_Sales))+
+  #geom_histogram(bins=70)+
+  geom_point(alpha = 0.1) +
+  labs(title = 'Sales Distribution by Fuel Prices',
+       y='Weekly Sales Volume',
+       x='Fuel Price')+
+  cleanup +
+  coord_cartesian(xlim = c(2.5,4.5), ylim = c(0,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+
+#### Sales by Unemployment Rate
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Unemployment, Weekly_Sales))+
+  #geom_histogram(bins=70)+
+  geom_point(alpha = 0.1) +
+  labs(title = 'Lower Unemployment Rate = Higher Weekly Sales Volume',
+       y='Weekly Sales Volume',
+       x='Unemployment Rate')+
+  cleanup +
+  coord_cartesian(xlim = c(4,15), ylim = c(0,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+
+#### Sales by Date
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Date, Weekly_Sales))+
+  #geom_histogram(bins=70)+
+  geom_point(alpha = 0.1) +
+  labs(title = 'Sales Distribution Across Date',
+       y='Weekly Sales Volume',
+       x='Date')+
+  cleanup +
+  coord_cartesian(ylim = c(0,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+
+#### Sales by Holiday
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(Holiday_Flag, Weekly_Sales))+
+  #geom_histogram(bins=70)+
+  geom_point(alpha = 0.1) +
+  labs(title = 'Sales Distribution Across Holiday Flag',
+       y='Weekly Sales Volume',
+       x='Holiday Flag')+
+  cleanup +
+  coord_cartesian(ylim = c(0,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+#### Sales by Year
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(year, Weekly_Sales))+
+  #geom_histogram(bins=70)+
+  geom_point(alpha = 0.1) +
+  labs(title = 'Sales Distribution Across Years',
+       y='Weekly Sales Volume',
+       x='Year')+
+  cleanup +
+  coord_cartesian(ylim = c(0,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+
+#### Sales by Month
+
+```{r}
+walmart_clean%>%
+  ggplot(aes(month, Weekly_Sales))+
+  #geom_histogram(bins=70)+
+  geom_point(alpha = 0.1) +
+  labs(title = 'Sales Distribution Across Months',
+       y='Weekly Sales Volume',
+       x='Month')+
+  cleanup +
+  coord_cartesian(ylim = c(200000,4000000))
+#+ geom_smooth(method = 'lm', se=FALSE, color='navyblue')
+```
+
+### Means
+
+```{r Overall Summary - Sales}
+summary(walmart_clean$Weekly_Sales)
+```
+
+```{r No Holidays Summary - Sales}
+summary(walmart_clean$Weekly_Sales[walmart_clean$Holiday_Flag=="No_Holiday"])
+```
+
+```{r Holidays Summary - Sales}
+summary(walmart_clean$Weekly_Sales[walmart_clean$Holiday_Flag=="Holiday"])
+```
+
+#### Plots
+
+##### Holiday vs. No Holiday
+
+```{r}
+bargraph <- ggplot(walmart_clean, aes(Holiday_Flag, Weekly_Sales))
+
+bargraph +
+  cleanup +
+  stat_summary(fun.y = mean, 
+               geom = "bar", 
+               fill = "White", 
+               color = "Black") +
+  stat_summary(fun.data = mean_cl_normal, 
+               geom = "errorbar", 
+               width = .2, 
+               position = "dodge") +
+  xlab("Holiday Flag") +
+  ylab("Average Weekly Sales")
+```
+
+##### Years
+
+```{r}
+bargraph2 <- ggplot(walmart_clean, aes(year, Weekly_Sales))
+
+bargraph2 +
+  cleanup +
+  stat_summary(fun.y = mean, 
+               geom = "bar", 
+               fill = "White", 
+               color = "Black") +
+  stat_summary(fun.data = mean_cl_normal, 
+               geom = "errorbar", 
+               width = .2, 
+               position = "dodge") +
+  xlab("Year") +
+  ylab("Average Weekly Sales") +
+  coord_cartesian(ylim = c(0,1200000))
+```
+
+##### Months
+
+```{r}
+bargraph3 <- ggplot(walmart_clean, aes(month, Weekly_Sales))
+
+bargraph3 +
+  cleanup +
+  stat_summary(fun.y = mean, 
+               geom = "bar", 
+               fill = "White", 
+               color = "Black") +
+  stat_summary(fun.data = mean_cl_normal, 
+               geom = "errorbar", 
+               width = .2, 
+               position = "dodge") +
+  xlab("Month") +
+  ylab("Average Weekly Sales") +
+  coord_cartesian(ylim = c(0,1500000))
+```
+
+## Technical Approach
+
+Outline the steps I will follow:
+
+### Collinearity [NOT USEFUL]
+
+```{r as numeric}
+#walmart_clean$Holiday_Flag <- as.numeric(walmart_clean$Holiday_Flag)
+#walmart_clean$Store <- as.numeric(walmart_clean$Store)
+#walmart_clean$year <- as.numeric(walmart_clean$year)
+#walmart_clean$month <- as.numeric(walmart_clean$month)
+```
+
+#### Weekly Sales and Year vs. Weekly Sales and Fuel Price [NOT USEFUL?]
+
+```{r Dependent Correlations}
+#cocor(~Weekly_Sales + year | Weekly_Sales + Fuel_Price,
+#      data = walmart_clean)
+```
+
+#### Holiday Flag vs. No Holiday Flag [NOT USEFUL]
+
+```{r Independent Correlation}
+#new <- subset(walmart_clean, Holiday_Flag == 1)
+#old <- subset(walmart_clean, Holiday_Flag == 2)
+#ind_data <- list(new,old)
+#cocor(~ Weekly_Sales + Fuel_Price | Weekly_Sales + Fuel_Price,
+#      data = ind_data)
+```
+
+#### Partial Correlations [NOT USEFUL]
+
+```{r}
+#pcor(walmart_clean[,-c(2)], method = "pearson")
+```
+
+### Linear Models - Hierarchical Regression VERSION 1
+
+I believe that certain known variables have a greater effect on weekly sales. I will use stepwise regression, and carry out ANOVA to test the significance after each step as outlined below:
+- First variable: Unemployment
+- Second variable: Fuel_Price
+- Third Variable: Temperature
+- Fourth Variable: Month
+- Fifth Variable: Holiday_Flag
+
+STEP 1:
+
+```{r}
+model_hr_v1_1 <- lm(Weekly_Sales ~ Unemployment,
+                data = walmart_clean)
+summary(model_hr_v1_1)
+```
+
+We see that effect of unemployment on weekly sales is large and significant.
+
+```{r}
+model_hr_v1_2 <- lm(Weekly_Sales ~ Unemployment + Fuel_Price,
+                data = walmart_clean)
+summary(model_hr_v1_2)
+```
+
+```{r}
+anova(model_hr_v1_1, model_hr_v1_2)
+```
+
+```{r}
+model_hr_v1_3 <- lm(Weekly_Sales ~ Unemployment + Fuel_Price + Temperature,
+                data = walmart_clean)
+summary(model_hr_v1_3)
+```
+
+```{r}
+anova(model_hr_v1_1, model_hr_v1_2, model_hr_v1_3)
+```
+
+```{r}
+model_hr_v1_4 <- lm(Weekly_Sales ~ Unemployment + Fuel_Price + Temperature + month,
+                data = walmart_clean)
+summary(model_hr_v1_4)
+```
+
+```{r}
+anova(model_hr_v1_1, model_hr_v1_2, model_hr_v1_3, model_hr_v1_4)
+```
+
+```{r}
+model_hr_v1_5 <- lm(Weekly_Sales ~ Unemployment + Fuel_Price + Temperature + month + Holiday_Flag,
+                data = walmart_clean)
+summary(model_hr_v1_5)
+```
+
+```{r}
+anova(model_hr_v1_1, model_hr_v1_2, model_hr_v1_3, model_hr_v1_4, model_hr_v1_5)
+```
+
+```{r}
+model_hr_v1_6 <- lm(Weekly_Sales ~ Unemployment + Fuel_Price + Temperature + month + Holiday_Flag + Store,
+                data = walmart_clean)
+summary(model_hr_v1_6)
+```
+
+```{r}
+anova(model_hr_v1_1, model_hr_v1_2, model_hr_v1_3, model_hr_v1_4, model_hr_v1_5, model_hr_v1_6)
+```
+
+### Linear Models - Hierarchical Regression VERSION 2
+
+I believe that certain known variables have a greater effect on weekly sales. I will use stepwise regression, and carry out ANOVA to test the significance after each step as outlined below:
+- First variable: Store
+- Second variable: Month
+- Third Variable: Holiday_Flag
+- Fourth Variable: Unemployment
+- Fifth Variable: Fuel_Price
+- Sixth Variable: Temperature
+
+STEP 1:
+
+```{r}
+model_hr_v2_1 <- lm(Weekly_Sales ~ Store,
+                data = walmart_clean)
+summary(model_hr_v2_1)
+```
+
+We see that store is a huge predictor of weekly sales volume. 
+
+```{r}
+model_hr_v2_2 <- lm(Weekly_Sales ~ Store + month,
+                data = walmart_clean)
+summary(model_hr_v2_2)
+```
+
+```{r}
+anova(model_hr_v2_1, model_hr_v2_2)
+```
+
+```{r}
+model_hr_v2_3 <- lm(Weekly_Sales ~ Store + month + Holiday_Flag,
+                data = walmart_clean)
+summary(model_hr_v2_3)
+```
+
+```{r}
+anova(model_hr_v2_1, model_hr_v2_2, model_hr_v2_3)
+```
+
+```{r}
+model_hr_v2_4 <- lm(Weekly_Sales ~ Store + month + Holiday_Flag + Unemployment,
+                data = walmart_clean)
+summary(model_hr_v2_4)
+```
+
+```{r}
+anova(model_hr_v2_1, model_hr_v2_2, model_hr_v2_3, model_hr_v2_4)
+```
+
+```{r}
+model_hr_v2_5 <- lm(Weekly_Sales ~ Store + month + Holiday_Flag + Unemployment + Fuel_Price,
+                data = walmart_clean)
+summary(model_hr_v2_5)
+```
+
+```{r}
+anova(model_hr_v2_1, model_hr_v2_2, model_hr_v2_3, model_hr_v2_4, model_hr_v2_5)
+```
+
+```{r}
+model_hr_v2_6 <- lm(Weekly_Sales ~ Store + month + Holiday_Flag + Unemployment + Fuel_Price + Temperature,
+                data = walmart_clean)
+summary(model_hr_v2_6)
+```
+
+```{r}
+anova(model_hr_v2_1, model_hr_v2_2, model_hr_v2_3, model_hr_v2_4, model_hr_v2_5, model_hr_v2_6)
+```
+
+```{r}
+
+```
+
+### T-TEST - Holiday Flag
+
+```{r}
+t.test(Weekly_Sales ~ Holiday_Flag,
+       data = walmart_clean,
+       var.equal = TRUE,
+       paired = FALSE)
+```
+
+```{r}
+t.test(Weekly_Sales ~ Holiday_Flag,
+       data = walmart_clean,
+       var.equal = FALSE,
+       paired = FALSE)
+```
+
+### ANOVA - Store
+
+```{r, warning=FALSE}
+walmart_clean$partno <- 1:nrow(walmart_clean)
+ezANOVA(data = walmart_clean,
+        dv = Weekly_Sales,
+        between = Store,
+        wid = partno,
+        type = 3, 
+        detailed = T)$`Levene's Test for Homogeneity of Variance`
+```
+
+We see that Levene's test is highly significant. Hence, we will run a one-way test.
+
+```{r}
+oneway.test(Weekly_Sales~Store, data = walmart_clean)
+```
+
+```{r}
+bargraph4 <- ggplot(walmart_clean, aes(Store, Weekly_Sales))
+bargraph4 +
+  cleanup +
+  stat_summary(fun.y = mean, 
+               geom = "bar", 
+               fill = "White", 
+               color = "Black") +
+  stat_summary(fun.data = mean_cl_normal, 
+               geom = "errorbar", 
+               width = .2, 
+               position = "dodge") +
+  xlab("Store") +
+  ylab("Average Weekly Sales")
+```
+
+### ANOVA - Month
+
+```{r}
+ezANOVA(data = walmart_clean,
+        dv = Weekly_Sales,
+        between = month,
+        wid = partno,
+        type = 3, 
+        detailed = T)$`Levene's Test for Homogeneity of Variance`
+```
+
+We see that Levene's test is highly significant. Hence, we will run a one-way test.
+
+```{r}
+oneway.test(Weekly_Sales~month, data = walmart_clean)
+```
+
+```{r}
+bargraph5 <- ggplot(walmart_clean, aes(month, Weekly_Sales))
+bargraph5 +
+  cleanup +
+  stat_summary(fun.y = mean, 
+               geom = "bar", 
+               fill = "White", 
+               color = "Black") +
+  stat_summary(fun.data = mean_cl_normal, 
+               geom = "errorbar", 
+               width = .2, 
+               position = "dodge") +
+  xlab("Month") +
+  ylab("Average Weekly Sales")
+```
